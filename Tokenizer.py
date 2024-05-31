@@ -8,15 +8,21 @@ class RegexTokenizer:
         self.vocab = {}
         self.merges = {}
 
-    def train(self, text, vocab_size, verbose=False):
-        # convert text to utf-8 bytes and then each byte to integers. ex.: "ab" => [97, 98]
-        split_text = re.findall(self.regex, text)
-        split_tokens = [list(map(int, t.encode("utf-8"))) for t in split_text]
+    def train(self, text_samples, vocab_size, verbose=False):
+        # adjust tokenizer to not accept a string of text, but a list of strings
+        split_text = [
+            [list(map(int, chunk.encode("utf-8")))
+            for chunk in re.findall(self.regex, sentence)]
+            for sample in text_samples
+            for sentence in sample
+        ]
+        split_tokens = [token for sentence_tokens in split_text for token in sentence_tokens]
+        print("Preprocessing Done", len(split_tokens))
 
         merges = {}
         vocab = {i: bytes([i]) for i in range(256)}
-
         num_merges = vocab_size-256
+
         for i in (tqdm(range(num_merges)) if not verbose else range(num_merges)):
             # get count of each possible bigram in the train data
             stats = self._get_stats(split_tokens)
