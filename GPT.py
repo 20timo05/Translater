@@ -16,55 +16,62 @@ from parameters import (
     DECODER_BLOCK_COUNT,
 )
 
-
-""" Multiple Heads of Attention that are processed in parallel """
+""" Multiple Heads of Self-Attention in parallel """
 class CausalSelfAttention(nn.Module):
     def __init__(self, num_heads, head_size, masking=False):
         super().__init__()
-
+        
+        self.num_heads = num_heads
+        self.head_size = head_size
         self.masking = masking
 
-        # Single Heads in parallel
-        self.query = torch.randn([num_heads, EMBEDDING_SIZE, head_size]) * 0.02
-        self.key = torch.randn([num_heads, EMBEDDING_SIZE, head_size]) * 0.02
-        self.value = torch.randn([num_heads, EMBEDDING_SIZE, head_size]) * 0.02
-
-        self.dropout1 = nn.Dropout(DROPOUT)
-        if self.masking:
-            self.register_buffer('tril', torch.tril(torch.ones(CONTEXT_SIZE, CONTEXT_SIZE)))
+        # query, key & value matrix for n heads that can be processed in parallel
+        self.query = nn.Linear(EMBEDDING_SIZE, num_heads*head_size, bias=False)
+        self.key = nn.Linear(EMBEDDING_SIZE, num_heads*head_size, bias=False)
+        self.value = nn.Linear(EMBEDDING_SIZE, num_heads*head_size, bias=False)
         
+        self.dropout1 = nn.Dropout(DROPOUT)
+
         # Only For Multi Head
         self.proj = nn.Linear(num_heads*head_size, EMBEDDING_SIZE) # back to original size (see 3b1b Value↑ matrix)
         self.dropout2 = nn.Dropout(DROPOUT)
+
+        if self.masking:
+            # since it's not a parameter of the model => register as buffer
+            self.register_buffer('tril', torch.tril(torch.ones(CONTEXT_SIZE, CONTEXT_SIZE)))
     
     def forward(self, x, cross_x=None):
         n_batch, n_context, n_emb = x.shape
-        num_heads, head_size = self.query.shape[0], self.query.shape[-1]
 
-        # (num_heads, n_batch, n_context, head_size)
-        q = torch.einsum('bxy,iyk->bxik', (x, self.query)).view(num_heads, n_batch, n_context, head_size)
+        q = self.query(x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
+
         if cross_x is None:
-            # Self-attention
-            k = torch.einsum('bxy,iyk->bxik', (x, self.key)).view(num_heads, n_batch, n_context, head_size)
-            v = torch.einsum('bxy,iyk->bxik', (x, self.value)).view(num_heads, n_batch, n_context, head_size)
+            # Self-Attention
+            k = self.key(x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
+            v = self.value(x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
         else:
-            # Cross-attention (key and value are from cross_x)
-            k = torch.einsum('bxy,iyk->bxik', (cross_x, self.key)).view(num_heads, n_batch, cross_x.size(1), head_size)
-            v = torch.einsum('bxy,iyk->bxik', (cross_x, self.value)).view(num_heads, n_batch, cross_x.size(1), head_size)
+            # Cross-Attention
+            assert n_context == cross_x.size(1), "Context length of cross_x must match the context length of x"
+            k = self.key(cross_x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
+            v = self.value(cross_x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
 
+        # q, k, v.shape = [n_batch, num_heads, n_context, head_size]
+
+        # Attention Score Table (Scaled dot-product attention   )
+        wei = q @ k.transpose(-2, -1) * q.shape[-1]**-0.5 # [n_batch, num_heads, n_context, n_context]
         
-        wei = q @ k.transpose(-2, -1) * q.shape[-1]**-0.5 # (num_heads, n_batch, n_context, n_context)
-    
-        if self.masking and cross_x is None: # Apply only for Self-Attention
+        if self.masking and cross_x is None: # Masked Attention - apply only for Self-Attention
             wei = wei.masked_fill(self.tril[:n_context, :n_context] == 0, float('-inf'))
-    
-        wei = F.softmax(wei, dim=-1) # (num_heads, n_batch, n_context, n_context)
+        
+        # Aggregation
+        wei = F.softmax(wei, dim=-1)
         wei = self.dropout1(wei)
 
-        self.out = wei @ v # (num_heads, n_batch, n_context, head_size)
-        self.out = self.out.view(n_batch, n_context, num_heads*head_size)
-        self.out = self.dropout2(self.proj(self.out)) # (n_batch, n_context, EMBEDDING_SIZE)
-        return self.out
+        out = wei @ v # [n_batch, num_heads, n_context, head_size]
+        out = out.transpose(1, 2).reshape(n_batch, n_context, self.num_heads*self.head_size)
+
+        out = self.dropout2(self.proj(out)) # (n_batch, n_context, EMBEDDING_SIZE)
+        return out
 
 
 class FeedForward(nn.Module):
@@ -194,7 +201,7 @@ class GPT(nn.Module):
             loss = None
         else:
             logits = logits.view(n_batch * dec_n_context, VOCAB_SIZE)
-            y = y.view(n_batch * CONTEXT_SIZE)
-            loss = F.cross_entropy(logits, y)
+            targets = targets.view(n_batch * dec_n_context)
+            loss = F.cross_entropy(logits, targets)
         
         return logits, loss
