@@ -40,33 +40,42 @@ class RegexTokenizer:
         self.merges = merges
 
     def encode(self, text):
-        split_text = re.findall(self.regex, text)
-        split_tokens = [list(map(int, t.encode("utf-8"))) for t in split_text]
+        tokens = list(map(int, text.encode("utf-8")))
 
-        for pair, new_token in self.merges.items():
-            split_tokens = self._merge_pairs(split_tokens, pair, new_token)
+        while len(tokens) >= 2:
+            counts = self._get_stats(tokens)
+            # find best bigram to merge (first in merges list)
+            pair = min(counts, key=lambda bigram: self.merges.get(bigram, float("inf")))       
+            
+            # no bigrams left to merge
+            if pair not in self.merges:
+                break
+            
+            new_token = self.merges[pair]
+            tokens = self._merge_pairs(tokens, pair, new_token)
         
-        # concat split token sequence back together
-        return [t for tokens in split_tokens for t in tokens]
-    
+        return tokens
+
     def decode(self, tokens):
         tokens = b"".join([self.vocab[i] for i in tokens])
         text = tokens.decode("utf-8", errors="replace")
         return text
 
-    def _get_stats(self, split_tokens):
+    def _get_stats(self, tokens):
         counts = {}
 
-        bigrams = [bigram for tokens in split_tokens for bigram in zip(tokens, tokens[1:])]
+        # check if tokens is 2d list (split tokens) or 1d
+        if isinstance(tokens[0], list):
+            bigrams = [bigram for split in tokens for bigram in zip(split, split[1:])]
+        else:
+            bigrams = zip(tokens, tokens[1:])
+    
         for bigram in bigrams:
             counts[bigram] = counts.get(bigram, 0) + 1
         return counts
     
-    def _merge_pairs(self, split_tokens, pair, new_token):
-        split_merged_tokens = []
-
-        for tokens in split_tokens:
-            
+    def _merge_pairs(self, tokens, pair, new_token):
+        def merge(tokens):
             merged_tok = []
             i = 0
             while i < len(tokens):
@@ -76,7 +85,13 @@ class RegexTokenizer:
                 else:
                     merged_tok.append(tokens[i])
                 i += 1
+            
+            return merged_tok
 
-            split_merged_tokens.append(merged_tok)
-
-        return split_merged_tokens
+        # check if tokens is 2d list (split tokens) or 1d
+        if isinstance(tokens[0], list):
+            split_merged_tokens = [merge(split) for split in tokens]
+            return split_merged_tokens
+        
+        else:
+            return merge(tokens)
