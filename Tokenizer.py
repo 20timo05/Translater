@@ -17,7 +17,7 @@ class RegexTokenizer:
             for sentence in sample
         ]
         split_tokens = [token for sentence_tokens in split_text for token in sentence_tokens]
-        print("Preprocessing Done", len(split_tokens))
+        print("Splitting Done", len(split_tokens))
 
         merges = {}
         vocab = {i: bytes([i]) for i in range(256)}
