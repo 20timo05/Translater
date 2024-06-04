@@ -6,19 +6,22 @@ import torch
 import multiprocessing as mp
 
 from Tokenizer import RegexTokenizer
-from parameters import GPT4_SPLIT_PATTERN, VOCAB_SIZE, SPECIAL_TOKENS, CONTEXT_SIZE
+from parameters import GPT4_SPLIT_PATTERN, NUM_MERGES, SPECIAL_TOKENS, CONTEXT_SIZE
 
 """ Train/ Load Tokenizer & load/ preprocess the whole dataset"""
 def tokenize_sentence_pair(args):
-    pair, tokenizer, pad_token, end_token = args
+    pair, tokenizer, pad_token, start_token, end_token = args
     english, german = pair
     eng_enc, ger_enc = tokenizer.encode(english), tokenizer.encode(german)
+
     # Truncation and Padding for english sentences (ensure len == CONTEXT_SIZE)
-    ger_enc = ger_enc + [end_token]
+    if len(ger_enc) + 2 > CONTEXT_SIZE:
+        ger_enc = ger_enc[-(CONTEXT_SIZE - 2) :]
+
+    ger_enc = [start_token] + ger_enc + [end_token]
+    
     if len(ger_enc) <= CONTEXT_SIZE:
         ger_enc = ger_enc + [pad_token] * (CONTEXT_SIZE - len(ger_enc) + 1)
-    else:
-        ger_enc = ger_enc[-(CONTEXT_SIZE + 1):]
 
     if len(eng_enc) <= CONTEXT_SIZE:
         eng_enc = eng_enc + [pad_token] * (CONTEXT_SIZE - len(eng_enc))
@@ -27,18 +30,25 @@ def tokenize_sentence_pair(args):
 
     return eng_enc, ger_enc
 
+
 def tokenize_dataset(translations, tokenizer):
     pad_token = [key for key, value in tokenizer.vocab.items() if value == b"<|PAD|>"][0]
-    end_token = [key for key, value in tokenizer.vocab.items() if value == b"<|ENDOFTEXT|>"][0]
+    start_token = [
+        key for key, value in tokenizer.vocab.items() if value == b"<|STARTOFTEXT|>"
+    ][0]
+    end_token = [
+        key for key, value in tokenizer.vocab.items() if value == b"<|ENDOFTEXT|>"
+    ][0]
 
-    args = [(pair, tokenizer, pad_token, end_token) for pair in translations]
+    args = [(pair, tokenizer, pad_token, start_token, end_token) for pair in translations]
 
     with mp.Pool(mp.cpu_count()) as pool:
-        results = list(tqdm(pool.imap(tokenize_sentence_pair, args), total=len(translations)))
+        results = list(
+            tqdm(pool.imap(tokenize_sentence_pair, args), total=len(translations))
+        )
 
     eng_data, ger_data = zip(*results)
     return list(eng_data), list(ger_data)
-
 
 
 """ Train Tokenizer, then preprocess & tokenize dataset"""
@@ -50,7 +60,7 @@ def train(translations):
     print("Train Tokenizer...")
     # only use a subset of the original dataset for tokenizer training
     translations_subset = random.sample(translations, int(len(translations) * 0.01))
-    tokenizer.train(translations_subset, vocab_size=VOCAB_SIZE)
+    tokenizer.train(translations_subset, num_merges=NUM_MERGES)
 
     for st in SPECIAL_TOKENS:
         tokenizer.vocab[max(tokenizer.vocab) + 1] = st
@@ -71,11 +81,10 @@ def train(translations):
         )
 
 
-
 def load_tokenizer_and_dataset(filepath):
     assert os.path.exists(filepath), "Cannot find Tokenizer"
 
-    tokenizer = RegexTokenizer()
+    tokenizer = RegexTokenizer(GPT4_SPLIT_PATTERN)
     with open(filepath, "rb") as f:
         combined_dict = pickle.load(f)
 

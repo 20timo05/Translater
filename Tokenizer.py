@@ -8,7 +8,7 @@ class RegexTokenizer:
         self.vocab = {}
         self.merges = {}
 
-    def train(self, text_samples, vocab_size, verbose=False):
+    def train(self, text_samples, num_merges, verbose=False):
         # adjust tokenizer to not accept a string of text, but a list of strings
         split_text = [
             [list(map(int, chunk.encode("utf-8")))
@@ -21,7 +21,6 @@ class RegexTokenizer:
 
         merges = {}
         vocab = {i: bytes([i]) for i in range(256)}
-        num_merges = vocab_size-256
 
         for i in (tqdm(range(num_merges)) if not verbose else range(num_merges)):
             # get count of each possible bigram in the train data

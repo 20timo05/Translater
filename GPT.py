@@ -38,7 +38,12 @@ class CausalSelfAttention(nn.Module):
 
         if self.masking:
             # since it's not a parameter of the model => register as buffer
-            self.register_buffer('tril', torch.tril(torch.ones(CONTEXT_SIZE, CONTEXT_SIZE)))
+            self.register_buffer(
+                "tril",
+                torch.tril(torch.ones(CONTEXT_SIZE, CONTEXT_SIZE)).view(
+                    1, 1, CONTEXT_SIZE, CONTEXT_SIZE
+                ),
+            )
     
     def forward(self, x, cross_x=None):
         n_batch, n_context, n_emb = x.shape
@@ -51,17 +56,17 @@ class CausalSelfAttention(nn.Module):
             v = self.value(x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
         else:
             # Cross-Attention
-            assert n_context == cross_x.size(1), "Context length of cross_x must match the context length of x"
-            k = self.key(cross_x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
-            v = self.value(cross_x).view(n_batch, n_context, self.num_heads, self.head_size).transpose(1, 2)
+            n_context_cross = cross_x.size(1)
+            k = self.key(cross_x).view(n_batch, n_context_cross, self.num_heads, self.head_size).transpose(1, 2)
+            v = self.value(cross_x).view(n_batch, n_context_cross, self.num_heads, self.head_size).transpose(1, 2)
 
         # q, k, v.shape = [n_batch, num_heads, n_context, head_size]
 
         # Attention Score Table (Scaled dot-product attention   )
-        wei = q @ k.transpose(-2, -1) * q.shape[-1]**-0.5 # [n_batch, num_heads, n_context, n_context]
+        wei = q @ k.transpose(-2, -1) * q.shape[-1]**-0.5 # [n_batch, num_heads, n_context, n_context or n_context_cross]
         
         if self.masking and cross_x is None: # Masked Attention - apply only for Self-Attention
-            wei = wei.masked_fill(self.tril[:n_context, :n_context] == 0, float('-inf'))
+            wei = wei.masked_fill(self.tril[:, :, :n_context, :n_context] == 0, float('-inf'))
         
         # Aggregation
         wei = F.softmax(wei, dim=-1)
@@ -110,12 +115,15 @@ class DecoderBlock(nn.Module):
 class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.blocks = nn.Sequential(
-            *[DecoderBlock(NUM_HEADS, HEAD_SIZE) for _ in range(DECODER_BLOCK_COUNT)]
+        self.blocks = nn.ModuleList(
+            [DecoderBlock(NUM_HEADS, HEAD_SIZE) for _ in range(DECODER_BLOCK_COUNT)]
         )
 
     def forward(self, dec_input, enc_output):
-        x = self.blocks(dec_input, enc_output) # [BATCH_SIZE, CONTEXT_SIZE, EMBEDDING_SIZE]
+        x = dec_input
+        for block in self.blocks:
+            x = block(x, enc_output) # [BATCH_SIZE, CONTEXT_SIZE, EMBEDDING_SIZE]
+            
         return x
 
 """ Transformer Block: Communication (MultiHead Attention) followed by computation (MLP - FeedForward) """
@@ -150,8 +158,10 @@ class Encoder(nn.Module):
 
 """ Combines Encoder and Decoder into full transformer model """
 class GPT(nn.Module):
-    def __init__(self):
+    def __init__(self, tokenizer):
         super().__init__()
+
+        self.tokenizer = tokenizer
 
         # add an Embedding Table for Character Embedding
         self.token_embedding_table = nn.Embedding(VOCAB_SIZE, EMBEDDING_SIZE)
@@ -175,7 +185,7 @@ class GPT(nn.Module):
             torch.nn.init.ones_(module.weight)
             torch.nn.init.zeros_(module.bias)
     
-    def forward(self, enc_input, dec_input, targets=None):
+    def forward(self, enc_input, dec_input, targets=None, ignore_index=None):
         n_batch, enc_n_context = enc_input.shape
         n_batch, dec_n_context = dec_input.shape
 
@@ -202,6 +212,39 @@ class GPT(nn.Module):
         else:
             logits = logits.view(n_batch * dec_n_context, VOCAB_SIZE)
             targets = targets.view(n_batch * dec_n_context)
-            loss = F.cross_entropy(logits, targets)
+            loss = F.cross_entropy(logits, targets, ignore_index=ignore_index)
         
         return logits, loss
+    
+    def translate(self, english_text, max_new_tokens=1000):
+        self.eval()
+
+        eng_enc = self.tokenizer.encode(english_text)
+        assert len(eng_enc) <= CONTEXT_SIZE, f"Sentence is too long! (max_tokens={CONTEXT_SIZE})"
+        eng_enc = torch.tensor(eng_enc, device=device).view(1, -1)
+
+        start_token = [
+            key for key, value in self.tokenizer.vocab.items() if value == b"<|STARTOFTEXT|>"
+        ][0]
+        end_token = [
+            key for key, value in self.tokenizer.vocab.items() if value == b"<|ENDOFTEXT|>"
+        ][0]
+
+        output_tokens = torch.tensor([start_token])
+        for _ in range(max_new_tokens):
+            last_tokens = output_tokens[-CONTEXT_SIZE:].view(1, -1)
+            logits, _ = self(eng_enc, last_tokens)
+            logits = logits[:, -1, :] # only use prediction using all tokens in context and predict actual next token
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)[0]
+
+            if next_token[0].item() == end_token:
+                break
+
+            output_tokens = torch.cat((output_tokens, next_token))
+        
+        translation = self.tokenizer.decode(output_tokens.tolist()[1:])
+        
+        self.train()
+        
+        return translation
