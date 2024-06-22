@@ -170,7 +170,9 @@ class GPT(nn.Module):
         self.encoder = Encoder()
         self.decoder = Decoder()
 
-        self.lm_head = nn.Linear(EMBEDDING_SIZE, VOCAB_SIZE)
+        self.lm_head = nn.Linear(EMBEDDING_SIZE, VOCAB_SIZE, bias=False)
+        # weight sharing (use same weights for Input Embeddings (token_embedding_table) and lm_head)
+        self.token_embedding_table.weight = self.lm_head.weight
 
         self.apply(self._init_weights)
 
