@@ -21,3 +21,8 @@ EVAL_INTERVAL = 1000  # Evaluate less frequently with more training steps
 EVAL_LOSS_BATCHES = 200
 
 device = 'cuda' if torch.cuda.is_available() else "cpu"
+
+# Pretraining
+REPLACE_FRACTION = 0.15 # tokens that get replaced by something
+MASK_FRACTION = 0.8 # out of REPLACE_FRACTION, get replaced with [MASK]
+RANDOM_TOKEN_FRACTION = 0.1 # out of REPLACE_FRACTION, get replaced with random token

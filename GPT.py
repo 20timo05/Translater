@@ -218,7 +218,7 @@ class GPT(nn.Module):
         
         return logits, loss
     
-    def translate(self, english_text, max_new_tokens=1000):
+    def translate(self, english_text, max_new_tokens=100):
         self.eval()
 
         eng_enc = self.tokenizer.encode(english_text)
